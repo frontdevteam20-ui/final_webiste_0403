@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { blogDb } from "../../../../firebaseConfig";
+import { getAuth, signInWithPhoneNumber, RecaptchaVerifier } from 'firebase/auth';
+import { auth } from '../../../../firebaseConfig';
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Headers from "../../../../components/layout/header/Header";
@@ -22,7 +24,7 @@ export default function CreateBlog() {
   
   // 2FA states
   const [authStep, setAuthStep] = useState('credentials'); // credentials, twofactor, captcha
-  const [twoFactorMethod, setTwoFactorMethod] = useState('email'); // email or mobile
+  const [twoFactorMethod, setTwoFactorMethod] = useState(''); // email or mobile
   const [email, setEmail] = useState("");
   const [mobile, setMobile] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
@@ -32,6 +34,10 @@ export default function CreateBlog() {
   const [isCodeSent, setIsCodeSent] = useState(false);
   const [resendTimer, setResendTimer] = useState(0);
   const captchaRef = useRef(null);
+  
+  // Firebase Phone Auth state
+  const [confirmationResult, setConfirmationResult] = useState(null);
+  const [recaptchaVerifier, setRecaptchaVerifier] = useState(null);
 
   // Generate random captcha
   const generateCaptcha = () => {
@@ -49,6 +55,121 @@ export default function CreateBlog() {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     setGeneratedCode(code);
     return code;
+  };
+
+  // Real Firebase Phone Auth function
+  const handleSendFirebaseOTP = async (phoneNumber) => {
+    try {
+      // Ensure auth is initialized
+      const authInstance = auth;
+      if (!authInstance) {
+        throw new Error('Firebase Auth not initialized');
+      }
+      
+      // Initialize reCAPTCHA with proper container
+      const verifier = new RecaptchaVerifier(authInstance, 'recaptcha-container', {
+        'size': 'invisible',
+        'callback': (response) => {
+          console.log('reCAPTCHA solved:', response);
+        },
+        'error-callback': (error) => {
+          console.error('reCAPTCHA error:', error);
+        }
+      });
+      
+      setRecaptchaVerifier(verifier);
+      
+      // Send OTP via Firebase
+      const confirmation = await signInWithPhoneNumber(authInstance, phoneNumber, verifier);
+      setConfirmationResult(confirmation);
+      setIsCodeSent(true);
+      setResendTimer(60);
+      
+      console.log('Real SMS sent to:', phoneNumber);
+      setLoginError('');
+      
+    } catch (error) {
+      console.error('Firebase Phone Auth error:', error);
+      console.log('Falling back to simulated OTP...');
+      
+      // Fallback to simulated OTP
+      const code = generateVerificationCode();
+      try {
+        const response = await fetch('/api/send-firebase-otp', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            mobile: phoneNumber,
+            action: 'send',
+            verificationCode: code,
+            username: username
+          })
+        });
+
+        const result = await response.json();
+        
+        if (response.ok) {
+          console.log('Fallback OTP sent successfully!');
+          console.log('Sent to:', result.mobile);
+          
+          // Show development code
+          if (result.developmentCode) {
+            console.log('Development OTP Code:', result.developmentCode);
+            alert(`🔔 OTP VERIFICATION CODE\n\nCode: ${result.developmentCode}\n\nThis is a fallback code.\nFor real SMS, enable Firebase billing.\n\nCode expires in 5 minutes.`);
+          }
+          
+          setLoginError('📱 OTP sent! Check the popup for your verification code.');
+        } else {
+          setLoginError('Both Firebase and fallback failed. Please try email verification.');
+        }
+      } catch (fallbackError) {
+        console.error('Fallback error:', fallbackError);
+        setLoginError('SMS verification failed. Please use email verification.');
+      }
+    }
+  };
+
+  // Verify Firebase OTP
+  const handleVerifyFirebaseOTP = async (otpCode) => {
+    try {
+      if (confirmationResult) {
+        // Real Firebase OTP verification
+        const result = await confirmationResult.confirm(otpCode);
+        console.log('Firebase OTP verified successfully:', result.user);
+        
+        // Authentication successful
+        localStorage.setItem('blogAdminAuth', 'authenticated');
+        setIsAuthenticated(true);
+        setShowLogin(false);
+        setLoginError('');
+      } else {
+        // Fallback OTP verification
+        if (verificationCode === generatedCode) {
+          // Authentication successful
+          localStorage.setItem('blogAdminAuth', 'authenticated');
+          setIsAuthenticated(true);
+          setShowLogin(false);
+          setLoginError('');
+        } else {
+          setLoginError("Invalid verification code. Please try again.");
+        }
+      }
+    } catch (error) {
+      console.error('Invalid OTP:', error);
+      
+      // Try fallback verification
+      if (verificationCode === generatedCode) {
+        // Authentication successful
+        localStorage.setItem('blogAdminAuth', 'authenticated');
+        setIsAuthenticated(true);
+        setShowLogin(false);
+        setLoginError('');
+      } else {
+        setLoginError("Invalid verification code. Please try again.");
+      }
+    }
   };
 
   // Timer for resend code
@@ -79,9 +200,9 @@ export default function CreateBlog() {
 
     // Step 1: Validate credentials
     const validCredentials = [
-      { username: 'admin', password: 'TECH@WEB-Blog2026', email: 'sowmyaodela1998@gmail.com', mobile: '+91 9502780215' },
-      { username: 'blogadmin', password: 'TECH@WEB-Blog2026', email: 'sowmyaodela1998@gmail.com', mobile: '+1234567891' },
-      { username: 'techcloud', password: 'TECH@WEB-Blog2026', email: 'sowmyaodela1998@gmail.com', mobile: '+1234567892' }
+      { username: 'admin', password: 'TECH@WEB-Blog2026', email: 'sowmyaodela1998@gmail.com', mobile: '+919502780215' },
+      { username: 'blogadmin', password: 'TECH@WEB-Blog2026', email: 'sowmyaodela1998@gmail.com', mobile: '+919502780215' },
+      // { username: 'techcloud', password: 'TECH@WEB-Blog2026', email: 'sowmyaodela1998@gmail.com', mobile: '+91 9502780215' }
     ];
 
     const user = validCredentials.find(
@@ -117,11 +238,11 @@ export default function CreateBlog() {
 
   const handleSendCode = async (method) => {
     setTwoFactorMethod(method);
-    const code = generateVerificationCode();
     setIsCodeSent(true);
     setResendTimer(60); // 60 seconds timer
     
     if (method === 'email') {
+      const code = generateVerificationCode();
       try {
         // Use custom domain SMTP email service
         const response = await fetch('/api/send-verification-email', {
@@ -149,10 +270,9 @@ export default function CreateBlog() {
         console.error('Error sending email:', error);
         setLoginError('Network error. Please check your connection and try again.');
       }
-    } else {
-      // For SMS, you would integrate with a service like Twilio here
-      console.log(`SMS verification code: ${code} would be sent to: ${mobile}`);
-      console.log('Note: SMS integration requires Twilio or similar service');
+    } else if (method === 'mobile') {
+      // Use real Firebase Phone Auth for SMS
+      await handleSendFirebaseOTP(mobile);
     }
   };
 
@@ -160,18 +280,21 @@ export default function CreateBlog() {
     e.preventDefault();
     setLoginError("");
 
+    if (twoFactorMethod === 'mobile') {
+      // Use real Firebase OTP verification for mobile
+      handleVerifyFirebaseOTP(verificationCode);
+      return;
+    }
+
+    // Email verification (existing logic)
     if (verificationCode === generatedCode) {
       // Authentication successful
       localStorage.setItem('blogAdminAuth', 'authenticated');
       setIsAuthenticated(true);
       setShowLogin(false);
-      // Reset all states
-      setAuthStep('credentials');
-      setVerificationCode("");
-      setUserCaptchaInput("");
-      setIsCodeSent(false);
+      setLoginError("");
     } else {
-      setLoginError("Invalid verification code");
+      setLoginError("Invalid verification code. Please try again.");
     }
   };
 
@@ -309,6 +432,9 @@ export default function CreateBlog() {
 
   return (
     <div>
+      {/* Firebase reCAPTCHA container for Phone Authentication */}
+      <div id="recaptcha-container"></div>
+      
       <Headers />
       <PageHeader title="Create Blog" breadcrumbs={breadcrumbs} />
       <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 1rem' }}>
