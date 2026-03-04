@@ -5,7 +5,7 @@ const isAnalyze = process.env.ANALYZE === 'true';
 /** @type {import('next').NextConfig} */
 const baseConfig = {
   reactStrictMode: true,
-  output: 'export', // Enables static export (SSG)
+  // output: 'export', // Disabled to enable API routes for email functionality
   trailingSlash: true, // Adds trailing slashes to URLs
   
   images: {

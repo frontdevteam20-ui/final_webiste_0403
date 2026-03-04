@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { blogDb } from "../../../../firebaseConfig";
 import { useRouter } from "next/navigation";
@@ -9,7 +9,7 @@ import Headers from "../../../../components/layout/header/Header";
 import PageHeader from "../../../../components/layout/PageHeader";
 import Footer from "../../../../components/layout/footer/Footer";
 import CustomCursor from "../../../../components/layout/CustomCursor";
-import { FaHome, FaLock, FaUser, FaKey } from 'react-icons/fa';
+import { FaHome, FaLock, FaUser, FaKey, FaEnvelope, FaMobileAlt, FaShieldAlt, FaArrowLeft } from 'react-icons/fa';
 
 export default function CreateBlog() {
   const router = useRouter();
@@ -19,6 +19,50 @@ export default function CreateBlog() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  
+  // 2FA states
+  const [authStep, setAuthStep] = useState('credentials'); // credentials, twofactor, captcha
+  const [twoFactorMethod, setTwoFactorMethod] = useState('email'); // email or mobile
+  const [email, setEmail] = useState("");
+  const [mobile, setMobile] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [generatedCode, setGeneratedCode] = useState("");
+  const [captchaCode, setCaptchaCode] = useState("");
+  const [userCaptchaInput, setUserCaptchaInput] = useState("");
+  const [isCodeSent, setIsCodeSent] = useState(false);
+  const [resendTimer, setResendTimer] = useState(0);
+  const captchaRef = useRef(null);
+
+  // Generate random captcha
+  const generateCaptcha = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    let captcha = '';
+    for (let i = 0; i < 6; i++) {
+      captcha += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setCaptchaCode(captcha);
+    return captcha;
+  };
+
+  // Generate 6-digit verification code
+  const generateVerificationCode = () => {
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    setGeneratedCode(code);
+    return code;
+  };
+
+  // Timer for resend code
+  useEffect(() => {
+    if (resendTimer > 0) {
+      const timer = setTimeout(() => setResendTimer(resendTimer - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [resendTimer]);
+
+  // Initialize captcha on mount
+  useEffect(() => {
+    generateCaptcha();
+  }, []);
 
   // Simple authentication check
   useEffect(() => {
@@ -33,24 +77,119 @@ export default function CreateBlog() {
     e.preventDefault();
     setLoginError("");
 
-    // Simple hardcoded authentication (in production, use proper auth system)
+    // Step 1: Validate credentials
     const validCredentials = [
-      { username: 'admin', password: 'TECH@WEB-Blog2026' },
-      { username: 'blogadmin', password: 'TECH@WEB-Blog2026' },
-      { username: 'techcloud', password: 'TECH@WEB-Blog2026' }
+      { username: 'admin', password: 'TECH@WEB-Blog2026', email: 'sowmyaodela1998@gmail.com', mobile: '+91 9502780215' },
+      { username: 'blogadmin', password: 'TECH@WEB-Blog2026', email: 'sowmyaodela1998@gmail.com', mobile: '+1234567891' },
+      { username: 'techcloud', password: 'TECH@WEB-Blog2026', email: 'sowmyaodela1998@gmail.com', mobile: '+1234567892' }
     ];
 
-    const isValid = validCredentials.some(
+    const user = validCredentials.find(
       cred => cred.username === username && cred.password === password
     );
 
-    if (isValid) {
+    if (!user) {
+      setLoginError("Invalid username or password");
+      return;
+    }
+
+    // Step 2: Move to captcha verification
+    setEmail(user.email);
+    setMobile(user.mobile);
+    setAuthStep('captcha');
+    generateCaptcha();
+  };
+
+  const handleCaptchaVerify = (e) => {
+    e.preventDefault();
+    setLoginError("");
+
+    if (userCaptchaInput.toLowerCase() !== captchaCode.toLowerCase()) {
+      setLoginError("Invalid captcha. Please try again.");
+      generateCaptcha();
+      setUserCaptchaInput("");
+      return;
+    }
+
+    // Step 3: Move to 2FA method selection
+    setAuthStep('twofactor');
+  };
+
+  const handleSendCode = async (method) => {
+    setTwoFactorMethod(method);
+    const code = generateVerificationCode();
+    setIsCodeSent(true);
+    setResendTimer(60); // 60 seconds timer
+    
+    if (method === 'email') {
+      try {
+        // Use custom domain SMTP email service
+        const response = await fetch('/api/send-verification-email', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            email: email,
+            verificationCode: code,
+            username: username
+          })
+        });
+
+        const result = await response.json();
+        
+        if (response.ok) {
+          console.log('Email sent successfully via custom domain SMTP!');
+          console.log('Message ID:', result.messageId);
+        } else {
+          console.error('Failed to send email:', result.error);
+          setLoginError('Failed to send verification email. Please check SMTP configuration.');
+        }
+      } catch (error) {
+        console.error('Error sending email:', error);
+        setLoginError('Network error. Please check your connection and try again.');
+      }
+    } else {
+      // For SMS, you would integrate with a service like Twilio here
+      console.log(`SMS verification code: ${code} would be sent to: ${mobile}`);
+      console.log('Note: SMS integration requires Twilio or similar service');
+    }
+  };
+
+  const handleVerifyCode = (e) => {
+    e.preventDefault();
+    setLoginError("");
+
+    if (verificationCode === generatedCode) {
+      // Authentication successful
       localStorage.setItem('blogAdminAuth', 'authenticated');
       setIsAuthenticated(true);
       setShowLogin(false);
+      // Reset all states
+      setAuthStep('credentials');
+      setVerificationCode("");
+      setUserCaptchaInput("");
+      setIsCodeSent(false);
     } else {
-      setLoginError("Invalid username or password");
+      setLoginError("Invalid verification code");
     }
+  };
+
+  const handleResendCode = () => {
+    if (resendTimer === 0) {
+      const code = generateVerificationCode();
+      setResendTimer(60);
+      console.log(`New verification code sent via ${twoFactorMethod}: ${code}`);
+    }
+  };
+
+  const handleBackToCredentials = () => {
+    setAuthStep('credentials');
+    setLoginError("");
+    setUserCaptchaInput("");
+    setVerificationCode("");
+    setIsCodeSent(false);
+    setResendTimer(0);
   };
 
   const handleLogout = () => {
@@ -189,114 +328,452 @@ export default function CreateBlog() {
               boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)', 
               padding: '3rem', 
               width: '100%', 
-              maxWidth: '400px'
+              maxWidth: '450px'
             }}>
+              {/* Header */}
               <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-                <FaLock style={{ fontSize: '3rem', color: '#ff6b00', marginBottom: '1rem' }} />
+                <FaShieldAlt style={{ fontSize: '3rem', color: '#ff6b00', marginBottom: '1rem' }} />
                 <h2 style={{ fontSize: '1.8rem', fontWeight: 'bold', color: '#1e293b', marginBottom: '0.5rem' }}>
-                  Authentication Required
+                  {authStep === 'credentials' && 'Secure Login'}
+                  {authStep === 'captcha' && 'Verify Captcha'}
+                  {authStep === 'twofactor' && 'Two-Factor Authentication'}
                 </h2>
-                <p style={{ color: '#6b7280', fontSize: '1rem' }}>
-                  Please login to create blog posts
+                <p style={{ color: '#6b7280', fontSize: '0.9rem' }}>
+                  {authStep === 'credentials' && 'Enter your credentials to continue'}
+                  {authStep === 'captcha' && 'Complete the captcha verification'}
+                  {authStep === 'twofactor' && 'Choose your verification method'}
                 </p>
               </div>
 
-              <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: '#374151', fontSize: '0.875rem' }}>
-                    <FaUser style={{ marginRight: '0.5rem', color: '#6b7280' }} />
-                    Username
-                  </label>
-                  <input
-                    type="text"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    required
-                    style={{
-                      width: '100%',
-                      padding: '0.75rem 1rem',
-                      border: '2px solid #e5e7eb',
-                      borderRadius: '0.5rem',
-                      fontSize: '1rem',
-                      transition: 'all 0.2s ease',
-                      backgroundColor: 'white'
-                    }}
-                    onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
-                    onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
-                  />
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: '#374151', fontSize: '0.875rem' }}>
-                    <FaKey style={{ marginRight: '0.5rem', color: '#6b7280' }} />
-                    Password
-                  </label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    style={{
-                      width: '100%',
-                      padding: '0.75rem 1rem',
-                      border: '2px solid #e5e7eb',
-                      borderRadius: '0.5rem',
-                      fontSize: '1rem',
-                      transition: 'all 0.2s ease',
-                      backgroundColor: 'white'
-                    }}
-                    onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
-                    onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
-                  />
-                </div>
-
-                {loginError && (
-                  <div style={{
-                    backgroundColor: '#fef2f2',
-                    border: '1px solid #fecaca',
-                    borderRadius: '0.5rem',
-                    padding: '0.75rem',
-                    color: '#dc2626',
-                    fontSize: '0.875rem'
-                  }}>
-                    {loginError}
+              {/* Step 1: Credentials */}
+              {authStep === 'credentials' && (
+                <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: '#374151', fontSize: '0.875rem' }}>
+                      <FaUser style={{ marginRight: '0.5rem', color: '#6b7280' }} />
+                      Username
+                    </label>
+                    <input
+                      type="text"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      required
+                      style={{
+                        width: '100%',
+                        padding: '0.75rem 1rem',
+                        border: '2px solid #e5e7eb',
+                        borderRadius: '0.5rem',
+                        fontSize: '1rem',
+                        transition: 'all 0.2s ease',
+                        backgroundColor: 'white'
+                      }}
+                      onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
+                      onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                    />
                   </div>
-                )}
 
-                <button
-                  type="submit"
-                  style={{
-                    backgroundColor: '#ff6b00',
-                    color: 'white',
-                    padding: '0.75rem 1.5rem',
-                    borderRadius: '0.5rem',
-                    fontSize: '1rem',
-                    fontWeight: '600',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                    border: 'none'
-                  }}
-                  onMouseOver={(e) => e.target.style.backgroundColor = '#ea580c'}
-                  onMouseOut={(e) => e.target.style.backgroundColor = '#ff6b00'}
-                >
-                  Login to Create Blog
-                </button>
-              </form>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: '#374151', fontSize: '0.875rem' }}>
+                      <FaKey style={{ marginRight: '0.5rem', color: '#6b7280' }} />
+                      Password
+                    </label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      style={{
+                        width: '100%',
+                        padding: '0.75rem 1rem',
+                        border: '2px solid #e5e7eb',
+                        borderRadius: '0.5rem',
+                        fontSize: '1rem',
+                        transition: 'all 0.2s ease',
+                        backgroundColor: 'white'
+                      }}
+                      onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
+                      onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                    />
+                  </div>
 
-              {/* <div style={{ 
-                marginTop: '2rem', 
-                padding: '1rem', 
-                backgroundColor: '#f8fafc', 
-                borderRadius: '0.5rem',
-                fontSize: '0.75rem',
-                color: '#6b7280',
-                textAlign: 'center'
-              }}>
-                <p style={{ marginBottom: '0.5rem' }}>Demo Credentials:</p>
-                <p>Username: admin | Password: admin123</p>
-                <p>Username: blogadmin | Password: blog@2024</p>
-                <p>Username: techcloud | Password: techcloud@blog</p>
-              </div> */}
+                  {loginError && (
+                    <div style={{
+                      backgroundColor: '#fef2f2',
+                      border: '1px solid #fecaca',
+                      borderRadius: '0.5rem',
+                      padding: '0.75rem',
+                      color: '#dc2626',
+                      fontSize: '0.875rem'
+                    }}>
+                      {loginError}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    style={{
+                      backgroundColor: '#ff6b00',
+                      color: 'white',
+                      padding: '0.75rem 1.5rem',
+                      borderRadius: '0.5rem',
+                      fontSize: '1rem',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      border: 'none'
+                    }}
+                    onMouseOver={(e) => e.target.style.backgroundColor = '#ea580c'}
+                    onMouseOut={(e) => e.target.style.backgroundColor = '#ff6b00'}
+                  >
+                    Continue to Verification
+                  </button>
+                </form>
+              )}
+
+              {/* Step 2: Captcha Verification */}
+              {authStep === 'captcha' && (
+                <form onSubmit={handleCaptchaVerify} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: '#374151', fontSize: '0.875rem' }}>
+                      Enter the code below:
+                    </label>
+                    <div style={{
+                      backgroundColor: '#f8fafc',
+                      border: '2px solid #e5e7eb',
+                      borderRadius: '0.5rem',
+                      padding: '1rem',
+                      textAlign: 'center',
+                      marginBottom: '1rem'
+                    }}>
+                      <div style={{
+                        fontSize: '1.5rem',
+                        fontWeight: 'bold',
+                        color: '#1e293b',
+                        letterSpacing: '0.2rem',
+                        fontFamily: 'monospace',
+                        userSelect: 'none'
+                      }}>
+                        {captchaCode}
+                      </div>
+                    </div>
+                    <input
+                      type="text"
+                      value={userCaptchaInput}
+                      onChange={(e) => setUserCaptchaInput(e.target.value)}
+                      placeholder="Enter captcha code"
+                      required
+                      style={{
+                        width: '100%',
+                        padding: '0.75rem 1rem',
+                        border: '2px solid #e5e7eb',
+                        borderRadius: '0.5rem',
+                        fontSize: '1rem',
+                        transition: 'all 0.2s ease',
+                        backgroundColor: 'white'
+                      }}
+                      onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
+                      onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '1rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        generateCaptcha();
+                        setUserCaptchaInput('');
+                      }}
+                      style={{
+                        backgroundColor: '#6b7280',
+                        color: 'white',
+                        padding: '0.75rem 1rem',
+                        borderRadius: '0.5rem',
+                        fontSize: '0.875rem',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        border: 'none'
+                      }}
+                      onMouseOver={(e) => e.target.style.backgroundColor = '#4b5563'}
+                      onMouseOut={(e) => e.target.style.backgroundColor = '#6b7280'}
+                    >
+                      Refresh
+                    </button>
+                    <button
+                      type="submit"
+                      style={{
+                        backgroundColor: '#ff6b00',
+                        color: 'white',
+                        padding: '0.75rem 1.5rem',
+                        borderRadius: '0.5rem',
+                        fontSize: '1rem',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        border: 'none',
+                        flex: 1
+                      }}
+                      onMouseOver={(e) => e.target.style.backgroundColor = '#ea580c'}
+                      onMouseOut={(e) => e.target.style.backgroundColor = '#ff6b00'}
+                    >
+                      Verify Captcha
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleBackToCredentials}
+                    style={{
+                      backgroundColor: 'transparent',
+                      color: '#6b7280',
+                      padding: '0.5rem',
+                      borderRadius: '0.5rem',
+                      fontSize: '0.875rem',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      border: 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.5rem'
+                    }}
+                    onMouseOver={(e) => e.target.style.color = '#4b5563'}
+                    onMouseOut={(e) => e.target.style.color = '#6b7280'}
+                  >
+                    <FaArrowLeft /> Back to Login
+                  </button>
+                </form>
+              )}
+
+              {/* Step 3: Two-Factor Authentication */}
+              {authStep === 'twofactor' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                  {!isCodeSent ? (
+                    // Method Selection
+                    <div>
+                      <p style={{ color: '#374151', fontSize: '0.9rem', marginBottom: '1rem' }}>
+                        Choose how you want to receive your verification code:
+                      </p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleSendCode('email')}
+                          style={{
+                            backgroundColor: 'white',
+                            border: '2px solid #e5e7eb',
+                            borderRadius: '0.5rem',
+                            padding: '1rem',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s ease',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '1rem'
+                          }}
+                          onMouseOver={(e) => {
+                            e.target.style.borderColor = '#3b82f6';
+                            e.target.style.backgroundColor = '#f8fafc';
+                          }}
+                          onMouseOut={(e) => {
+                            e.target.style.borderColor = '#e5e7eb';
+                            e.target.style.backgroundColor = 'white';
+                          }}
+                        >
+                          <FaEnvelope style={{ fontSize: '1.5rem', color: '#3b82f6' }} />
+                          <div style={{ textAlign: 'left' }}>
+                            <div style={{ fontWeight: '600', color: '#1e293b' }}>Email</div>
+                            <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+                              Code sent to {email}
+                            </div>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleSendCode('mobile')}
+                          style={{
+                            backgroundColor: 'white',
+                            border: '2px solid #e5e7eb',
+                            borderRadius: '0.5rem',
+                            padding: '1rem',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s ease',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '1rem'
+                          }}
+                          onMouseOver={(e) => {
+                            e.target.style.borderColor = '#3b82f6';
+                            e.target.style.backgroundColor = '#f8fafc';
+                          }}
+                          onMouseOut={(e) => {
+                            e.target.style.borderColor = '#e5e7eb';
+                            e.target.style.backgroundColor = 'white';
+                          }}
+                        >
+                          <FaMobileAlt style={{ fontSize: '1.5rem', color: '#10b981' }} />
+                          <div style={{ textAlign: 'left' }}>
+                            <div style={{ fontWeight: '600', color: '#1e293b' }}>SMS</div>
+                            <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+                              Code sent to {mobile}
+                            </div>
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    // Code Verification
+                    <form onSubmit={handleVerifyCode}>
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: '#374151', fontSize: '0.875rem' }}>
+                          Enter 6-digit verification code
+                        </label>
+                        <p style={{ color: '#6b7280', fontSize: '0.875rem', marginBottom: '1rem' }}>
+                          Code sent to {twoFactorMethod === 'email' ? email : mobile}
+                        </p>
+                        <input
+                          type="text"
+                          value={verificationCode}
+                          onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                          placeholder="000000"
+                          maxLength={6}
+                          required
+                          style={{
+                            width: '100%',
+                            padding: '0.75rem 1rem',
+                            border: '2px solid #e5e7eb',
+                            borderRadius: '0.5rem',
+                            fontSize: '1.25rem',
+                            textAlign: 'center',
+                            letterSpacing: '0.5rem',
+                            fontFamily: 'monospace',
+                            transition: 'all 0.2s ease',
+                            backgroundColor: 'white'
+                          }}
+                          onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
+                          onBlur={(e) => e.target.style.borderColor = '#e5e7eb'}
+                        />
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          onClick={handleResendCode}
+                          disabled={resendTimer > 0}
+                          style={{
+                            backgroundColor: resendTimer > 0 ? '#e5e7eb' : 'transparent',
+                            color: resendTimer > 0 ? '#9ca3af' : '#3b82f6',
+                            padding: '0.5rem',
+                            borderRadius: '0.5rem',
+                            fontSize: '0.875rem',
+                            cursor: resendTimer > 0 ? 'not-allowed' : 'pointer',
+                            transition: 'all 0.2s ease',
+                            border: 'none'
+                          }}
+                        >
+                          {resendTimer > 0 ? `Resend in ${resendTimer}s` : 'Resend Code'}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsCodeSent(false);
+                            setVerificationCode('');
+                          }}
+                          style={{
+                            backgroundColor: 'transparent',
+                            color: '#6b7280',
+                            padding: '0.5rem',
+                            borderRadius: '0.5rem',
+                            fontSize: '0.875rem',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s ease',
+                            border: 'none'
+                          }}
+                        >
+                          Change Method
+                        </button>
+                      </div>
+
+                      <button
+                        type="submit"
+                        style={{
+                          backgroundColor: '#ff6b00',
+                          color: 'white',
+                          padding: '0.75rem 1.5rem',
+                          borderRadius: '0.5rem',
+                          fontSize: '1rem',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease',
+                          border: 'none',
+                          width: '100%',
+                          marginTop: '1rem'
+                        }}
+                        onMouseOver={(e) => e.target.style.backgroundColor = '#ea580c'}
+                        onMouseOut={(e) => e.target.style.backgroundColor = '#ff6b00'}
+                      >
+                        Verify & Login
+                      </button>
+                    </form>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleBackToCredentials}
+                    style={{
+                      backgroundColor: 'transparent',
+                      color: '#6b7280',
+                      padding: '0.5rem',
+                      borderRadius: '0.5rem',
+                      fontSize: '0.875rem',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      border: 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.5rem'
+                    }}
+                    onMouseOver={(e) => e.target.style.color = '#4b5563'}
+                    onMouseOut={(e) => e.target.style.color = '#6b7280'}
+                  >
+                    <FaArrowLeft /> Back to Login
+                  </button>
+                </div>
+              )}
+
+              {/* Error Display */}
+              {loginError && authStep !== 'credentials' && (
+                <div style={{
+                  backgroundColor: '#fef2f2',
+                  border: '1px solid #fecaca',
+                  borderRadius: '0.5rem',
+                  padding: '0.75rem',
+                  color: '#dc2626',
+                  fontSize: '0.875rem',
+                  marginTop: '1rem'
+                }}>
+                  {loginError}
+                </div>
+              )}
+
+              {/* Development Info - Remove in production */}
+              {process.env.NODE_ENV === 'development' && authStep === 'twofactor' && isCodeSent && (
+                <div style={{
+                  backgroundColor: '#f0f9ff',
+                  border: '1px solid #bae6fd',
+                  borderRadius: '0.5rem',
+                  padding: '0.75rem',
+                  color: '#0369a1',
+                  fontSize: '0.75rem',
+                  marginTop: '1rem',
+                  textAlign: 'center'
+                }}>
+                  <div style={{ fontWeight: '600', marginBottom: '0.25rem' }}>Development Mode</div>
+                  <div>Verification Code: <strong>{generatedCode}</strong></div>
+                  <div>Check console for send details</div>
+                </div>
+              )}
             </div>
           </div>
         )}
